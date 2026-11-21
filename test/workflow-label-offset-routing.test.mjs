@@ -137,6 +137,86 @@ test('one labelDy on the 18-node workflow does not reroute any edge', () => {
   }
 });
 
+test('an automatic labelAt stays put when labelDy is also set', () => {
+  const document = (route) => ({
+    schema_version: 2,
+    diagram_type: 'workflow',
+    meta: { title: 'Absolute label', output: 'abs.html', legend: { mode: 'hidden' } },
+    lanes: [{ id: 'top', label: 'Top' }, { id: 'bottom', label: 'Bottom' }],
+    nodes: [
+      { id: 'a', lane: 'top', col: 0, type: 'backend', label: 'A' },
+      { id: 'b', lane: 'bottom', col: 0, type: 'backend', label: 'B' },
+      { id: 'c', lane: 'top', col: 1, type: 'backend', label: 'C' },
+      { id: 'd', lane: 'bottom', col: 1, type: 'backend', label: 'D' },
+    ],
+    edges: [
+      { id: 'ab', from: 'a', to: 'b', label: 'down' },
+      {
+        id: 'cd', from: 'c', to: 'd', label: 'down',
+        labelAt: [154.2, 181], labelDy: 12,
+        ...(route ? { route } : {}),
+      },
+    ],
+  });
+  for (const route of [undefined, 'straight']) {
+    const result = compile(document(route), 'showcase');
+    assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+    const label = result.receipt.labels.find((entry) => entry.edge === 'cd');
+    assert.deepEqual([label.x, label.y], [154.2, 181], route || 'auto');
+  }
+});
+
+function singleColumnChain(extra) {
+  return {
+    schema_version: 2,
+    diagram_type: 'workflow',
+    meta: { title: 'Chain', output: 'chain.html', legend: { mode: 'hidden' } },
+    lanes: [{ id: 'main', label: 'Main' }],
+    nodes: [
+      { id: 'a', lane: 'main', col: 0, type: 'backend', label: 'A' },
+      { id: 'b', lane: 'main', col: 0, type: 'backend', label: 'B' },
+      { id: 'c', lane: 'main', col: 0, type: 'backend', label: 'C' },
+    ],
+    edges: [
+      { id: 'ab', from: 'a', to: 'b', label: 'next' },
+      { id: 'bc', from: 'b', to: 'c', label: 'next', ...extra },
+    ],
+  };
+}
+
+test('a label offset on a single-column chain keeps the automatic stack gaps', () => {
+  const automatic = compile(singleColumnChain(), 'showcase');
+  assert.equal(automatic.ok, true, JSON.stringify(automatic.diagnostics));
+  assert.deepEqual(automatic.receipt.nodes.map((node) => [node.id, node.y]), [
+    ['a', 86], ['b', 176], ['c', 266],
+  ]);
+  assert.deepEqual(routes(automatic), [
+    ['ab', [[118, 138], [118, 176]]],
+    ['bc', [[118, 228], [118, 266]]],
+  ]);
+  for (const [field, delta] of [['labelDy', 0], ['labelDy', 4], ['labelDx', 0]]) {
+    const result = compile(singleColumnChain({ [field]: delta }), 'showcase');
+    assert.equal(result.ok, true, `${field} ${delta}: ${JSON.stringify(result.diagnostics)}`);
+    assert.deepEqual(
+      result.receipt.nodes.map((node) => [node.id, node.y]),
+      automatic.receipt.nodes.map((node) => [node.id, node.y]),
+    );
+    assert.deepEqual(routes(result), routes(automatic));
+    const moved = new Map(labels(result).map(([edge, x, y]) => [edge, [x, y]]));
+    for (const [edge, x, y] of labels(automatic)) {
+      const [nx, ny] = moved.get(edge);
+      const dx = edge === 'bc' && field === 'labelDx' ? delta : 0;
+      const dy = edge === 'bc' && field === 'labelDy' ? delta : 0;
+      assert.deepEqual([nx - x, ny - y], [dx, dy], `${field} ${edge}`);
+    }
+  }
+  for (const extra of [{ labelSegment: 0 }, { bias: 0.5 }]) {
+    const result = compile(singleColumnChain(extra), 'showcase');
+    assert.equal(result.ok, false, JSON.stringify(extra));
+    assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === 'workflow/node-overlap'));
+  }
+});
+
 test('public validation keeps the reported routes when one labelDy is added', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'archify-label-dy-'));
   const run = (workflow, name) => {

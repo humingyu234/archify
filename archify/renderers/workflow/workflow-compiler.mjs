@@ -198,8 +198,11 @@ function singleColumnChain(workflow) {
   const incoming = new Set();
   for (const edge of edges) {
     const { from, to, route = 'auto', fromSide = 'auto', toSide = 'auto' } = edge;
+    // labelDx/labelDy only move that edge's label. They do not change the
+    // chain's vertical order, so they must not collapse the automatic gaps.
+    // bias and labelSegment still select a different route or label segment.
     if (route !== 'auto' || fromSide !== 'auto' || toSide !== 'auto'
-      || ['bias', 'labelDx', 'labelDy', 'labelSegment'].some(field => edge[field] !== undefined)
+      || ['bias', 'labelSegment'].some(field => edge[field] !== undefined)
       || !byId.has(from) || !byId.has(to) || next.has(from) || incoming.has(to)) return null;
     next.set(from, edge);
     incoming.add(to);
@@ -4545,7 +4548,11 @@ function edgeForRouteLabel(edge) {
 }
 
 function workflowEdgeLabelPoint(edge, points) {
+  // labelAt is an absolute point. labelPoint returns it before any relative
+  // offset, including on an automatic route. Adding Dx/Dy here would move a
+  // hard pin.
   if ((!edge.route || edge.route === 'auto')
+    && !edge.labelAt
     && (edge.labelDx !== undefined || edge.labelDy !== undefined)) {
     const [x, y] = workflowEdgeLabelPoint(edgeForRouteLabel(edge), points);
     return [x + (edge.labelDx || 0), y + (edge.labelDy || 0)];
