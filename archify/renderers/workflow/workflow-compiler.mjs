@@ -2481,10 +2481,11 @@ function clearStraightAutomaticPlan(edge) {
     other.role === 'main' && other.from === edge.to && other.to === edge.from
     && !pathCache.has(other)
   ))) return null;
-  // Relative label pins are not absolute, but they still participate in
-  // placed-label conflict evidence. Reserving a straight path for them first
-  // can change which edge owns the corridor and scramble supportedFixes.
-  if (edge.labelDx !== undefined || edge.labelDy !== undefined || edge.labelSegment !== undefined) {
+  // labelSegment chooses which segment carries the label, so reserving this
+  // route first can change the corridor that owns a placed-label conflict.
+  // labelDx/labelDy do not change the route; they are applied when the label
+  // is placed and must not opt the edge out of straight reservation.
+  if (edge.labelSegment !== undefined) {
     return null;
   }
   const from = nodes.get(edge.from);
@@ -2531,12 +2532,12 @@ function validateReadablePinnedGeometry() {
   // Fix probes use the same reservation policy as public compilation. A
   // verified labelAt replacement retains causal label-pin evidence even when
   // deleting that pin lets automatic routing recreate its collision.
-  // Skip when any edge carries a relative/absolute label pin: straight-first
-  // would reorder corridors and scramble placed-label conflict evidence.
+  // An absolute labelAt, or a labelSegment choice, can change which corridor
+  // owns a placed-label conflict. Reserving other straight routes first would
+  // scramble that evidence, so those pins still suppress the whole pass.
+  // labelDx/labelDy only move one label and do not.
   const hasLabelPins = workflow.edges.some((edge) => (
     edge.labelAt !== undefined
-    || edge.labelDx !== undefined
-    || edge.labelDy !== undefined
     || edge.labelSegment !== undefined
   ));
   if (!hasLabelPins) {
@@ -3609,7 +3610,7 @@ function routeMeetsHardRhythm(points) {
 
 function routeLabelClearsNodes(edge, points) {
   if (!edge.label || edge.labelAt) return true;
-  const [lx, ly] = workflowEdgeLabelPoint(edge, points);
+  const [lx, ly] = workflowEdgeLabelPoint(edgeForRouteLabel(edge), points);
   const width = workflowLabelWidth(edge.label, edge);
   const rect = { x: lx - width / 2, y: ly - EDGE_LABEL_ASCENT, width, height: EDGE_LABEL_HEIGHT };
   // The comparison shrinks the rect by two pixels, so only nodes inside the
@@ -3627,7 +3628,7 @@ function routeLabelClearsNodes(edge, points) {
 
 function candidateLabelRect(edge, points) {
   if (!edge.label) return null;
-  const [lx, ly] = workflowEdgeLabelPoint(edge, points);
+  const [lx, ly] = workflowEdgeLabelPoint(edgeForRouteLabel(edge), points);
   const width = workflowLabelWidth(edge.label, edge);
   return { x: lx - width / 2, y: ly - EDGE_LABEL_ASCENT, width, height: EDGE_LABEL_HEIGHT };
 }
@@ -4032,7 +4033,7 @@ function automaticForwardReversePx(edge, points) {
 const laterArrivalCache = new Map();
 function laterArrivalBlockCount(edge, points) {
   if (!independentAutomaticRoute(edge)
-    || ['labelDx', 'labelDy', 'labelSegment'].some(field => edge[field] !== undefined)) return 0;
+    || edge.labelSegment !== undefined) return 0;
   const from = nodes.get(edge.from), to = nodes.get(edge.to);
   if (from.col !== to.col || to.cy >= from.cy) return 0;
   let cached = laterArrivalCache.get(edge);
@@ -4040,7 +4041,7 @@ function laterArrivalBlockCount(edge, points) {
     const arrivals = [];
     const eligible = workflow.edges.filter(incoming => {
       if (incoming === edge || pathCache.has(incoming) || !independentAutomaticRoute(incoming)
-        || ['labelDx', 'labelDy', 'labelSegment'].some(field => incoming[field] !== undefined)) return false;
+        || incoming.labelSegment !== undefined) return false;
       const source = nodes.get(incoming.from), target = nodes.get(incoming.to);
       return source && target && target.col === from.col && source.col !== target.col
         && target.cy > to.cy && target.cy < from.cy;
@@ -4531,7 +4532,24 @@ function routeVia(
   }
 }
 
+// Automatic labelDx/labelDy are offsets from the label the router already
+// chose. Authored route presets keep the source-relative anchor, including an
+// explicit zero, because that placement is part of the preset contract.
+function edgeForRouteLabel(edge) {
+  if ((edge.route && edge.route !== 'auto')
+    || (edge.labelDx === undefined && edge.labelDy === undefined)) return edge;
+  const copy = { ...edge };
+  delete copy.labelDx;
+  delete copy.labelDy;
+  return copy;
+}
+
 function workflowEdgeLabelPoint(edge, points) {
+  if ((!edge.route || edge.route === 'auto')
+    && (edge.labelDx !== undefined || edge.labelDy !== undefined)) {
+    const [x, y] = workflowEdgeLabelPoint(edgeForRouteLabel(edge), points);
+    return [x + (edge.labelDx || 0), y + (edge.labelDy || 0)];
+  }
   if (workflow.schema_version === 1) {
     if (edge.labelAt || Number.isInteger(edge.labelSegment) || points.length !== 3) {
       return labelPoint(edge, points);
@@ -4704,7 +4722,8 @@ function automaticPortCandidates(edge, node, side, preferred, counterpart) {
 
 function automaticEndpointRepairs(edge, selected, from, to, naturalFromSide, naturalToSide, narrowSlots = false) {
   if (!independentAutomaticRoute(edge)
-    || ['labelDx', 'labelDy', 'labelSegment', 'bias'].some(field => edge[field] !== undefined)
+    || edge.labelSegment !== undefined
+    || edge.bias !== undefined
     || selected.cost.properCrossingCount !== 0
     || (!selected.cost.sharedCorridorPx && !selected.cost.unrelatedBendContactCount)
     || selected.points.length < 3) return [];
@@ -4834,7 +4853,8 @@ function readableInternalDetourPlans(edge, selected, from, to, naturalFromSide, 
 // their existing paths. Four side pairs and explicit grid budgets bound work.
 function readableFreeSpacePlans(edge, selected, from, to, naturalFromSide, naturalToSide) {
   if (!independentAutomaticRoute(edge) || from.lane === to.lane
-    || ['labelDx', 'labelDy', 'labelSegment', 'bias'].some(field => edge[field] !== undefined)
+    || edge.labelSegment !== undefined
+    || edge.bias !== undefined
     || (!selected.cost.sharedCorridorPx && !selected.cost.properCrossingCount
       && !selected.cost.unrelatedBendContactCount)) return [];
   const obstacles = [];
@@ -5278,7 +5298,12 @@ function registerRouted(edge, routed) {
     byEdge.set(edge, routed);
   }
   const index = edgeIndexByEdge.get(edge);
-  const label = index === undefined ? null : labelRectFor(edge, index);
+  // Route the diagram against the label's automatic box. A relative offset is
+  // applied only to the published label, so it cannot move another edge.
+  // Do not cache that routing box: the published rectangle includes the offset.
+  const label = index === undefined
+    ? null
+    : labelRectFromPoints(edgeForRouteLabel(edge), routed.points, index);
   if (label) {
     obstacleGrid.insert(rectToBounds(label), { kind: 'label', edge, rect: label, sequence });
     rightmostRoutedEdge = Math.max(rightmostRoutedEdge, label.x + label.width);
@@ -5335,14 +5360,11 @@ function pathFor(edge, automaticPlan = null) {
 // cached; keying on that object means a re-routed edge gets a fresh rectangle.
 const LABEL_RECT_CACHE = new WeakMap();
 
-function labelRectFor(edge, relationIndex) {
-  if (!edge.label || !nodes.has(edge.from) || !nodes.has(edge.to)) return null;
-  const routed = pathFor(edge);
-  const cached = LABEL_RECT_CACHE.get(routed);
-  if (cached) return cached;
-  const [lx, ly] = workflowEdgeLabelPoint(edge, routed.points);
+function labelRectFromPoints(edge, points, relationIndex) {
+  if (!edge?.label || !points) return null;
+  const [lx, ly] = workflowEdgeLabelPoint(edge, points);
   const width = workflowLabelWidth(edge.label, edge);
-  const rect = {
+  return {
     relation: edge,
     relationIndex,
     label: edge.label,
@@ -5353,6 +5375,14 @@ function labelRectFor(edge, relationIndex) {
     lx,
     ly,
   };
+}
+
+function labelRectFor(edge, relationIndex) {
+  if (!edge.label || !nodes.has(edge.from) || !nodes.has(edge.to)) return null;
+  const routed = pathFor(edge);
+  const cached = LABEL_RECT_CACHE.get(routed);
+  if (cached) return cached;
+  const rect = labelRectFromPoints(edge, routed.points, relationIndex);
   LABEL_RECT_CACHE.set(routed, rect);
   return rect;
 }
