@@ -518,12 +518,43 @@ function createReadableLayout(workflow, layoutFeedback = {}) {
     }
   }
 
+  // A facing top port on the lower node of a same-lane stack is the end of a
+  // straight segment that stays between the two nodes, below the lane title.
+  // Treating every authored top port as a title crossing shifts every column
+  // even when that segment never enters the title strip. Corridors that leave
+  // above a node, or that cross into another lane, still reserve clearance.
+  const verticalCenter = (node) => Number(nodeOffsets?.get(node.id) ?? node.yOffset) || 0;
+  const facingStackTopStaysBelowLaneTitle = (edge, endpointId) => {
+    if (edge.channelY !== undefined || !['auto', 'straight'].includes(edge.route || 'auto')) return false;
+    const node = nodesById.get(endpointId);
+    const other = nodesById.get(edge.from === endpointId ? edge.to : edge.from);
+    if (!node || !other || node.lane !== other.lane || node.col !== other.col) return false;
+    const nodeOffset = verticalCenter(node);
+    const otherOffset = verticalCenter(other);
+    if (!(otherOffset < nodeOffset - 0.0001)) return false;
+    const blocked = nodes.some((candidate) => {
+      if (candidate === node || candidate === other) return false;
+      if (candidate.lane !== node.lane || candidate.col !== node.col) return false;
+      const offset = verticalCenter(candidate);
+      return offset > otherOffset + 0.0001 && offset < nodeOffset - 0.0001;
+    });
+    if (blocked) return false;
+    const sideOf = (target, fallback) => {
+      const authored = edge.from === target.id ? edge.fromSide : edge.toSide;
+      return !authored || authored === 'auto' ? fallback : authored;
+    };
+    return sideOf(other, 'bottom') === 'bottom' && sideOf(node, 'top') === 'top';
+  };
   const unpinnedTopEndpointIds = new Set();
   for (const edge of asArray(workflow.edges)) {
     const preservesHorizontalPins = Array.isArray(edge.via) || edge.channelX !== undefined;
     if (preservesHorizontalPins) continue;
-    if (edge.fromSide === 'top') unpinnedTopEndpointIds.add(edge.from);
-    if (edge.toSide === 'top') unpinnedTopEndpointIds.add(edge.to);
+    if (edge.fromSide === 'top' && !facingStackTopStaysBelowLaneTitle(edge, edge.from)) {
+      unpinnedTopEndpointIds.add(edge.from);
+    }
+    if (edge.toSide === 'top' && !facingStackTopStaysBelowLaneTitle(edge, edge.to)) {
+      unpinnedTopEndpointIds.add(edge.to);
+    }
   }
   const laneOrder = new Map(asArray(workflow.lanes).map((lane, index) => [lane.id, index]));
   let laneHeaderShift = 0;
