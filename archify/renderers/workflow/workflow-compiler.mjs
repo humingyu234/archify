@@ -532,13 +532,9 @@ function createReadableLayout(workflow, layoutFeedback = {}) {
     const nodeOffset = verticalCenter(node);
     const otherOffset = verticalCenter(other);
     if (!(otherOffset < nodeOffset - 0.0001)) return false;
-    const blocked = nodes.some((candidate) => {
-      if (candidate === node || candidate === other) return false;
-      if (candidate.lane !== node.lane || candidate.col !== node.col) return false;
-      const offset = verticalCenter(candidate);
-      return offset > otherOffset + 0.0001 && offset < nodeOffset - 0.0001;
-    });
-    if (blocked) return false;
+    // A node between these endpoints bends the route around the stack. That
+    // bend stays in the lane content, below the title, so the occupied gap
+    // is not a reason to shift every column.
     const sideOf = (target, fallback) => {
       const authored = edge.from === target.id ? edge.fromSide : edge.toSide;
       return !authored || authored === 'auto' ? fallback : authored;

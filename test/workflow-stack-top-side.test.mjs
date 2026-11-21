@@ -80,6 +80,33 @@ test('explicit facing top ports on a same-lane stack keep the automatic columns'
   }
 });
 
+test('a facing top port that bends around a middle stack node stays below the lane title', () => {
+  const skipped = (pinStack) => {
+    const workflow = releaseFlow({ pinStack: false });
+    workflow.edges = [
+      {
+        id: 'ac', from: 'a', to: 'c',
+        ...(pinStack ? { fromSide: 'bottom', toSide: 'top' } : {}),
+      },
+      ...workflow.edges.filter((edge) => edge.id !== 'ab' && edge.id !== 'bc'),
+    ];
+    return workflow;
+  };
+  for (const qualityProfile of ['standard', 'showcase']) {
+    const pinned = geometry(skipped(true), qualityProfile);
+    const automatic = geometry(skipped(false), qualityProfile);
+    // The pin forces a bottom/top bend around b. That bend is not the
+    // automatic route, but it stays below the title, so the columns and
+    // canvas must stay with the unpinned plan.
+    assert.deepEqual(pinned.viewBox, automatic.viewBox, qualityProfile);
+    assert.deepEqual(pinned.columns, automatic.columns, qualityProfile);
+    assert.deepEqual(pinned.nodes, automatic.nodes, qualityProfile);
+    const points = pinned.edges.find(([id]) => id === 'ac')[1];
+    assert.ok(points.every(([, y]) => y > 78), JSON.stringify(points));
+    assert.equal(points[0][0], pinned.columns[0]);
+  }
+});
+
 test('a top corridor that actually crosses a lane title still clears that title', () => {
   const crossLane = (lowerLabel) => ({
     schema_version: 2,
